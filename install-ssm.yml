@@ -1,0 +1,134 @@
+---
+- name: Install AWS SSM Agent and Configure IAM Role
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Install SSM Agent on Ubuntu/Debian
+      block:
+        - name: Install snapd
+          apt:
+            name: snapd
+            state: present
+            update_cache: yes
+        
+        - name: Install SSM Agent via snap
+          snap:
+            name: amazon-ssm-agent
+            classic: yes
+        
+        - name: Enable SSM Agent service
+          systemd:
+            name: snap.amazon-ssm-agent.amazon-ssm-agent.service
+            enabled: yes
+            state: started
+      when: ansible_os_family == "Debian"
+
+    - name: Install SSM Agent on Amazon Linux/RHEL/CentOS
+      block:
+        - name: Install SSM Agent
+          yum:
+            name: amazon-ssm-agent
+            state: present
+        
+        - name: Enable and start SSM Agent
+          systemd:
+            name: amazon-ssm-agent
+            enabled: yes
+            state: started
+      when: ansible_os_family == "RedHat"
+
+    - name: Install SSM Agent on SUSE
+      block:
+        - name: Download SSM Agent
+          get_url:
+            url: "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm"
+            dest: "/tmp/amazon-ssm-agent.rpm"
+        
+        - name: Install SSM Agent
+          zypper:
+            name: "/tmp/amazon-ssm-agent.rpm"
+            state: present
+        
+        - name: Enable and start SSM Agent
+          systemd:
+            name: amazon-ssm-agent
+            enabled: yes
+            state: started
+      when: ansible_os_family == "Suse"
+
+    - name: Check if SSM Agent is already installed (for newer AMIs)
+      systemd:
+        name: amazon-ssm-agent
+      register: ssm_preinstalled
+      ignore_errors: yes
+
+    - name: Start SSM Agent if pre-installed
+      systemd:
+        name: amazon-ssm-agent
+        enabled: yes
+        state: started
+      when: ssm_preinstalled is succeeded
+
+    - name: Get instance metadata
+      uri:
+        url: http://169.254.169.254/latest/meta-data/instance-id
+        method: GET
+        return_content: yes
+      register: instance_id
+      delegate_to: localhost
+      run_once: true
+
+    - name: Create SSM IAM Role
+      amazon.aws.iam_role:
+        name: SSMRole
+        assume_role_policy_document: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ec2.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }
+        managed_policies:
+          - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        state: present
+      delegate_to: localhost
+      run_once: true
+
+    - name: Create instance profile
+      amazon.aws.iam_instance_profile:
+        name: SSMInstanceProfile
+        roles:
+          - SSMRole
+        state: present
+      delegate_to: localhost
+      run_once: true
+
+    - name: Attach IAM role to instance
+      amazon.aws.ec2_instance:
+        instance_ids:
+          - "{{ instance_id.content }}"
+        instance_role: SSMInstanceProfile
+        state: running
+      delegate_to: localhost
+      run_once: true
+
+    - name: Wait for SSM Agent to register
+      pause:
+        seconds: 30
+
+    - name: Verify SSM Agent status
+      systemd:
+        name: "{{ 'snap.amazon-ssm-agent.amazon-ssm-agent.service' if ansible_os_family == 'Debian' else 'amazon-ssm-agent' }}"
+      register: ssm_status
+
+    - name: Display SSM Agent status
+      debug:
+        msg: "SSM Agent is {{ ssm_status.status.ActiveState }}"
