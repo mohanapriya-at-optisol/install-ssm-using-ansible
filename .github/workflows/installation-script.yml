@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - main
+      
 
 jobs:
   install-ssm:
@@ -16,7 +17,7 @@ jobs:
 
       - name: Create SSH Keys and Inventory
         env:
-          SSH_KEY_1: ${{ secrets.SSH_KEY_1 }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
           
@@ -28,23 +29,66 @@ jobs:
           IFS=',' read -ra IPS <<< "$SERVER_IPS"
           IFS=',' read -ra USERS <<< "$SSH_USERS"
           
-          counter=1
-          for i in "${!IPS[@]}"; do
-            ip="${IPS[i]}"
-            user="${USERS[i]}"
+          # Check if using single key or multiple keys
+          if [ -n "$SSH_PRIVATE_KEY" ]; then
+            echo "Using single SSH key for all servers"
             
-            # Get SSH key for this server
-            key_var="SSH_KEY_${counter}"
-            key_content="${!key_var}"
+            # Create single SSH key file
+            echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
             
-            # Create SSH key file for this server
-            echo "$key_content" > ~/.ssh/id_rsa_server${counter}
-            chmod 600 ~/.ssh/id_rsa_server${counter}
+            # Test SSH key
+            if ssh-keygen -l -f ~/.ssh/id_rsa >/dev/null 2>&1; then
+              echo "✓ SSH key is valid"
+            else
+              echo "✗ SSH key is invalid - check format in GitHub Secrets"
+            fi
             
-            # Add to inventory
-            echo "server${counter} ansible_host=${ip} ansible_user=${user} ansible_ssh_private_key_file=~/.ssh/id_rsa_server${counter}" >> inventory.ini
-            ((counter++))
-          done
+            # Add all servers with same key
+            counter=1
+            for i in "${!IPS[@]}"; do
+              ip="${IPS[i]}"
+              user="${USERS[i]}"
+              echo "server${counter} ansible_host=${ip} ansible_user=${user} ansible_ssh_private_key_file=~/.ssh/id_rsa" >> inventory.ini
+              ((counter++))
+            done
+            
+          else
+            echo "Using multiple SSH keys for servers"
+            
+            # Create multiple SSH key files
+            counter=1
+            for i in "${!IPS[@]}"; do
+              ip="${IPS[i]}"
+              user="${USERS[i]}"
+              
+              # Get SSH key for this server
+              key_var="SSH_KEY_${counter}"
+              key_content="${!key_var}"
+              
+              if [ -z "$key_content" ]; then
+                echo "Warning: SSH_KEY_${counter} is empty or not set"
+                continue
+              fi
+              
+              echo "Processing SSH_KEY_${counter} for ${ip}..."
+              
+              # Create SSH key file for this server
+              echo "$key_content" > ~/.ssh/id_rsa_server${counter}
+              chmod 600 ~/.ssh/id_rsa_server${counter}
+              
+              # Test SSH key
+              if ssh-keygen -l -f ~/.ssh/id_rsa_server${counter} >/dev/null 2>&1; then
+                echo "✓ SSH key ${counter} is valid"
+              else
+                echo "✗ SSH key ${counter} is invalid - check format in GitHub Secrets"
+              fi
+              
+              # Add to inventory
+              echo "server${counter} ansible_host=${ip} ansible_user=${user} ansible_ssh_private_key_file=~/.ssh/id_rsa_server${counter}" >> inventory.ini
+              ((counter++))
+            done
+          fi
           
           cat >> inventory.ini << EOF
           
@@ -55,10 +99,12 @@ jobs:
           echo "Generated inventory:"
           cat inventory.ini
 
-      - name: Install Ansible
+      - name: Install Ansible and Collections
         run: |
           sudo apt update
           sudo apt install -y ansible
+          ansible-galaxy collection install amazon.aws
+          ansible-galaxy collection install community.general
 
       - name: Run Ansible Playbook
         run: |
@@ -67,6 +113,6 @@ jobs:
       - name: Cleanup SSH Keys and Inventory
         if: always()
         run: |
-          rm -f ~/.ssh/id_rsa_server*
+          rm -f ~/.ssh/id_rsa ~/.ssh/id_rsa_server*
           rm -f inventory.ini
           echo "SSH keys and inventory files deleted"
