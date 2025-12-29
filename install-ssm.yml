@@ -66,19 +66,20 @@
 
     - name: Start SSM Agent if pre-installed
       systemd:
-        name: amazon-ssm-agent
+        name: "{{ 'snap.amazon-ssm-agent.amazon-ssm-agent.service' if ansible_os_family == 'Debian' else 'amazon-ssm-agent' }}"
         enabled: yes
         state: started
       when: ssm_preinstalled is succeeded
+      ignore_errors: yes
 
     - name: Get instance metadata
       uri:
         url: http://169.254.169.254/latest/meta-data/instance-id
         method: GET
         return_content: yes
+        timeout: 10
       register: instance_id
-      delegate_to: localhost
-      run_once: true
+      ignore_errors: yes
 
     - name: Create SSM IAM Role
       amazon.aws.iam_role:
@@ -101,6 +102,7 @@
         state: present
       delegate_to: localhost
       run_once: true
+      when: instance_id is succeeded
 
     - name: Create instance profile
       amazon.aws.iam_instance_profile:
@@ -110,6 +112,7 @@
         state: present
       delegate_to: localhost
       run_once: true
+      when: instance_id is succeeded
 
     - name: Attach IAM role to instance
       amazon.aws.ec2_instance:
@@ -119,6 +122,7 @@
         state: running
       delegate_to: localhost
       run_once: true
+      when: instance_id is succeeded
 
     - name: Wait for SSM Agent to register
       pause:
