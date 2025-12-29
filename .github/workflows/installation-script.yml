@@ -1,6 +1,8 @@
 name: Install SSM Agent with Ansible
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   install-ssm:
