@@ -1,0 +1,70 @@
+name: Install SSM Agent with Ansible
+on:
+  workflow_dispatch:
+
+jobs:
+  install-ssm:
+    runs-on: self-hosted
+    env:
+      SERVER_IPS: ${{ secrets.SERVER_IPS }}
+      SSH_USERS: ${{ secrets.SSH_USERS }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Create SSH Keys and Inventory
+        env:
+          SSH_KEY_1: ${{ secrets.SSH_KEY_1 }}
+        run: |
+          mkdir -p ~/.ssh
+          
+          cat > inventory.ini << EOF
+          [servers]
+          EOF
+          
+          # Parse arrays
+          IFS=',' read -ra IPS <<< "$SERVER_IPS"
+          IFS=',' read -ra USERS <<< "$SSH_USERS"
+          
+          counter=1
+          for i in "${!IPS[@]}"; do
+            ip="${IPS[i]}"
+            user="${USERS[i]}"
+            
+            # Get SSH key for this server
+            key_var="SSH_KEY_${counter}"
+            key_content="${!key_var}"
+            
+            # Create SSH key file for this server
+            echo "$key_content" > ~/.ssh/id_rsa_server${counter}
+            chmod 600 ~/.ssh/id_rsa_server${counter}
+            
+            # Add to inventory
+            echo "server${counter} ansible_host=${ip} ansible_user=${user} ansible_ssh_private_key_file=~/.ssh/id_rsa_server${counter}" >> inventory.ini
+            ((counter++))
+          done
+          
+          cat >> inventory.ini << EOF
+          
+          [all:vars]
+          ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+          EOF
+          
+          echo "Generated inventory:"
+          cat inventory.ini
+
+      - name: Install Ansible
+        run: |
+          sudo apt update
+          sudo apt install -y ansible
+
+      - name: Run Ansible Playbook
+        run: |
+          ansible-playbook -i inventory.ini install-ssm.yml
+
+      - name: Cleanup SSH Keys and Inventory
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa_server*
+          rm -f inventory.ini
+          echo "SSH keys and inventory files deleted"
